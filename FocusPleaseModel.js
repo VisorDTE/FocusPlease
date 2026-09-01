@@ -148,6 +148,15 @@ function edgeSigns(win, mon) {
   return { sx: sx, sy: sy }
 }
 
+function yInterior(win, mon) {
+  var tol = 20
+  var wa = mon && mon.wa && mon.wa.w > 0 && mon.wa.h > 0 ? mon.wa : null
+  if (!wa || !win) return false
+  var top = win.y <= wa.y + tol
+  var bot = win.y + win.h >= wa.y + wa.h - tol
+  return !top && !bot
+}
+
 function deltaToTarget(win, mon, target) {
   var signs = edgeSigns(win, mon)
   return {
@@ -355,45 +364,56 @@ function axisTargets(focused, group, bases, mon, axis) {
   return targets
 }
 
-function findGapSplit(windows, axis) {
-  var sorted = windows.slice().sort(function (p, q) {
-    return axis === "x" ? p.x - q.x : p.y - q.y
-  })
-  var i, j
-  for (i = 1; i < sorted.length; i++) {
-    var a = sorted.slice(0, i)
-    var b = sorted.slice(i)
-    var aMax = 0
-    var bMin = 1e9
-    for (j = 0; j < a.length; j++) {
-      var end = axis === "x" ? a[j].x + a[j].w : a[j].y + a[j].h
-      if (end > aMax) aMax = end
-    }
-    for (j = 0; j < b.length; j++) {
-      var start = axis === "x" ? b[j].x : b[j].y
-      if (start < bMin) bMin = start
-    }
-    if (aMax <= bMin + 12) return { a: a, b: b }
-  }
-  return null
+function partition(windows, axis) {
+  if (!windows || windows.length < 2) return null
+  var strips = clusterStrips(windows, axis)
+  if (strips.length < 2) return null
+  var groups = []
+  var i
+  for (i = 0; i < strips.length; i++) groups.push(strips[i].windows)
+  return groups
 }
 
 function buildTree(windows) {
   if (!windows || windows.length === 0) return null
   if (windows.length === 1) return { type: "leaf", win: windows[0] }
-  var v = findGapSplit(windows, "x")
-  if (v) return { type: "v", a: buildTree(v.a), b: buildTree(v.b) }
-  var h = findGapSplit(windows, "y")
-  if (h) return { type: "h", a: buildTree(h.a), b: buildTree(h.b) }
+  var vg = partition(windows, "x")
+  if (vg) {
+    var vchildren = []
+    var vi
+    for (vi = 0; vi < vg.length; vi++) vchildren.push(buildTree(vg[vi]))
+    return { type: "v", children: vchildren }
+  }
+  var hg = partition(windows, "y")
+  if (hg) {
+    var hchildren = []
+    var hi
+    for (hi = 0; hi < hg.length; hi++) hchildren.push(buildTree(hg[hi]))
+    return { type: "h", children: hchildren }
+  }
   var sorted = windows.slice().sort(function (p, q) { return p.x - q.x })
   var mid = Math.max(1, Math.floor(sorted.length / 2))
-  return { type: "v", a: buildTree(sorted.slice(0, mid)), b: buildTree(sorted.slice(mid)) }
+  return { type: "v", children: [buildTree(sorted.slice(0, mid)), buildTree(sorted.slice(mid))] }
+}
+
+function nodeChildren(node) {
+  if (!node || node.type === "leaf") return []
+  if (node.children) return node.children
+  var out = []
+  if (node.a) out.push(node.a)
+  if (node.b) out.push(node.b)
+  return out
 }
 
 function treeContains(node, addr) {
   if (!node) return false
   if (node.type === "leaf") return node.win.address === addr
-  return treeContains(node.a, addr) || treeContains(node.b, addr)
+  var kids = nodeChildren(node)
+  var i
+  for (i = 0; i < kids.length; i++) {
+    if (treeContains(kids[i], addr)) return true
+  }
+  return false
 }
 
 function subtreeWeight(node, bases, axis) {
@@ -404,9 +424,19 @@ function subtreeWeight(node, bases, axis) {
     if (v > 0) return v
     return axis === "x" ? node.win.w : node.win.h
   }
-  if ((node.type === "h" && axis === "x") || (node.type === "v" && axis === "y"))
-    return Math.max(subtreeWeight(node.a, bases, axis), subtreeWeight(node.b, bases, axis))
-  return subtreeWeight(node.a, bases, axis) + subtreeWeight(node.b, bases, axis)
+  var kids = nodeChildren(node)
+  var i
+  if ((node.type === "h" && axis === "x") || (node.type === "v" && axis === "y")) {
+    var mx = 0
+    for (i = 0; i < kids.length; i++) {
+      var wv = subtreeWeight(kids[i], bases, axis)
+      if (wv > mx) mx = wv
+    }
+    return mx
+  }
+  var sum = 0
+  for (i = 0; i < kids.length; i++) sum += subtreeWeight(kids[i], bases, axis)
+  return sum
 }
 
 function focusedDemand(node, focusedAddr, bases, axis) {
@@ -418,44 +448,53 @@ function focusedDemand(node, focusedAddr, bases, axis) {
     if (v > 0) return v
     return axis === "x" ? node.win.w : node.win.h
   }
-  if ((node.type === "h" && axis === "x") || (node.type === "v" && axis === "y"))
-    return Math.max(focusedDemand(node.a, focusedAddr, bases, axis), focusedDemand(node.b, focusedAddr, bases, axis))
-  return focusedDemand(node.a, focusedAddr, bases, axis) + focusedDemand(node.b, focusedAddr, bases, axis)
-}
-
-function stripClaim(strip, focused, bases, available, n, axis, mon) {
+  var kids = nodeChildren(node)
   var i
-  var hasFocused = false
-  for (i = 0; i < strip.windows.length; i++) {
-    if (strip.windows[i].address === focused.address) {
-      hasFocused = true
-      break
+  if ((node.type === "h" && axis === "x") || (node.type === "v" && axis === "y")) {
+    var mx = 0
+    for (i = 0; i < kids.length; i++) {
+      var d = focusedDemand(kids[i], focusedAddr, bases, axis)
+      if (d > mx) mx = d
     }
+    return mx
   }
-  if (!hasFocused || strip.windows.length === 1)
-    return configuredDim(stripRep(strip, focused, axis), bases, available, n, axis)
-
-  var tree = buildTree(strip.windows)
-  var demand = stripClaimTree(tree, focused.address, bases, axis)
-  var minS = minDim(mon, axis)
-  if (demand < minS) demand = minS
-  return demand
+  var sum = 0
+  for (i = 0; i < kids.length; i++) sum += focusedDemand(kids[i], focusedAddr, bases, axis)
+  return sum
 }
 
-function stripClaimTree(node, focusedAddr, bases, axis) {
+function leafCount(node) {
+  if (!node) return 0
+  if (node.type === "leaf") return 1
+  var kids = nodeChildren(node)
+  var n = 0
+  var i
+  for (i = 0; i < kids.length; i++) n += leafCount(kids[i])
+  return n
+}
+
+function unfocusedWeight(node, focusedAddr, bases, axis) {
   if (!node) return 0
   if (node.type === "leaf") {
-    if (node.win.address === focusedAddr) {
-      var b = lookupBase(node.win, bases)
-      var v = b ? numberOr(axis === "x" ? b.w : b.h, 0) : 0
-      if (v > 0) return v
-      return axis === "x" ? node.win.w : node.win.h
-    }
+    if (node.win.address === focusedAddr) return 0
     return subtreeWeight(node, bases, axis)
   }
-  if ((node.type === "h" && axis === "x") || (node.type === "v" && axis === "y"))
-    return Math.max(stripClaimTree(node.a, focusedAddr, bases, axis), stripClaimTree(node.b, focusedAddr, bases, axis))
-  return stripClaimTree(node.a, focusedAddr, bases, axis) + stripClaimTree(node.b, focusedAddr, bases, axis)
+  var kids = nodeChildren(node)
+  var i
+  if ((node.type === "h" && axis === "x") || (node.type === "v" && axis === "y")) {
+    for (i = 0; i < kids.length; i++) {
+      if (treeContains(kids[i], focusedAddr)) return unfocusedWeight(kids[i], focusedAddr, bases, axis)
+    }
+    var mx = 0
+    for (i = 0; i < kids.length; i++) {
+      var u = unfocusedWeight(kids[i], focusedAddr, bases, axis)
+      if (u > mx) mx = u
+    }
+    return mx
+  }
+  var sum = 0
+  for (i = 0; i < kids.length; i++) sum += unfocusedWeight(kids[i], focusedAddr, bases, axis)
+  return sum
 }
 
 function fillTree(node, box, focusedAddr, bases, mon, out) {
@@ -464,98 +503,98 @@ function fillTree(node, box, focusedAddr, bases, mon, out) {
     out[node.win.address] = { w: Math.max(1, Math.round(box.w)), h: Math.max(1, Math.round(box.h)) }
     return
   }
+  var kids = nodeChildren(node)
   var axis = node.type === "v" ? "x" : "y"
   var total = axis === "x" ? box.w : box.h
   var minS = minDim(mon, axis)
-  var fa = treeContains(node.a, focusedAddr)
-  var fb = treeContains(node.b, focusedAddr)
-  var sizeA
-  if (fa || fb) {
-    var demand = focusedDemand(fa ? node.a : node.b, focusedAddr, bases, axis)
-    demand = Math.max(minS, Math.min(demand, total - minS))
-    sizeA = fa ? demand : total - demand
-  } else {
-    var wa = subtreeWeight(node.a, bases, axis)
-    var wb = subtreeWeight(node.b, bases, axis)
-    sizeA = Math.round(total * wa / Math.max(1, wa + wb))
-    sizeA = Math.max(minS, Math.min(sizeA, total - minS))
+  var n = kids.length
+  var fi = -1
+  var i
+  for (i = 0; i < n; i++) {
+    if (treeContains(kids[i], focusedAddr)) fi = i
   }
-  if (node.type === "v") {
-    fillTree(node.a, { w: sizeA, h: box.h }, focusedAddr, bases, mon, out)
-    fillTree(node.b, { w: total - sizeA, h: box.h }, focusedAddr, bases, mon, out)
+  var sizesAlong = []
+  var minNeed = []
+  for (i = 0; i < n; i++) minNeed.push(minS * Math.max(1, leafCount(kids[i])))
+  if (fi >= 0) {
+    var fd = focusedDemand(kids[fi], focusedAddr, bases, axis)
+    var otherMin = 0
+    for (i = 0; i < n; i++) if (i !== fi) otherMin += minNeed[i]
+    fd = Math.max(minNeed[fi], Math.min(fd, total - otherMin))
+    var wHere = unfocusedWeight(kids[fi], focusedAddr, bases, axis)
+    var weights = []
+    var unfocused = []
+    var wOther = 0
+    for (i = 0; i < n; i++) {
+      if (i === fi) continue
+      unfocused.push(i)
+      var wt = subtreeWeight(kids[i], bases, axis)
+      weights.push(wt)
+      wOther += wt
+    }
+    var remainder = total - fd
+    var shareHere = 0
+    if (remainder > 0 && (wHere + wOther) > 0) shareHere = remainder * wHere / (wHere + wOther)
+    var sizeFi = fd + shareHere
+    sizeFi = Math.max(minNeed[fi], Math.min(sizeFi, total - otherMin))
+    var rem2 = total - sizeFi
+    var shares = shareRemainder(weights, rem2, minS)
+    for (i = 0; i < n; i++) sizesAlong[i] = 0
+    sizesAlong[fi] = sizeFi
+    for (i = 0; i < unfocused.length; i++) sizesAlong[unfocused[i]] = shares[i]
   } else {
-    fillTree(node.a, { w: box.w, h: sizeA }, focusedAddr, bases, mon, out)
-    fillTree(node.b, { w: box.w, h: total - sizeA }, focusedAddr, bases, mon, out)
+    var weightsAll = []
+    for (i = 0; i < n; i++) weightsAll.push(subtreeWeight(kids[i], bases, axis))
+    sizesAlong = shareRemainder(weightsAll, total, minS)
+  }
+  for (i = 0; i < n; i++) {
+    var span = sizesAlong[i]
+    if (node.type === "v") fillTree(kids[i], { w: span, h: box.h }, focusedAddr, bases, mon, out)
+    else fillTree(kids[i], { w: box.w, h: span }, focusedAddr, bases, mon, out)
   }
 }
 
-function assignStrip(strip, width, focused, bases, mon, sizes) {
-  if (strip.windows.length === 1) {
-    sizes[strip.windows[0].address] = { w: width, h: strip.windows[0].h }
-    return
-  }
-  var y0 = strip.windows[0].y
-  var y1 = strip.windows[0].y + strip.windows[0].h
+function boundingBox(windows) {
+  if (!windows || !windows.length) return { w: 0, h: 0 }
+  var x0 = windows[0].x
+  var y0 = windows[0].y
+  var x1 = windows[0].x + windows[0].w
+  var y1 = windows[0].y + windows[0].h
   var i
-  for (i = 1; i < strip.windows.length; i++) {
-    var w = strip.windows[i]
+  for (i = 1; i < windows.length; i++) {
+    var w = windows[i]
+    if (w.x < x0) x0 = w.x
     if (w.y < y0) y0 = w.y
+    if (w.x + w.w > x1) x1 = w.x + w.w
     if (w.y + w.h > y1) y1 = w.y + w.h
   }
-  fillTree(buildTree(strip.windows), { w: width, h: Math.max(1, y1 - y0) }, focused.address, bases, mon, sizes)
+  return { w: Math.max(1, Math.round(x1 - x0)), h: Math.max(1, Math.round(y1 - y0)) }
 }
 
 function layoutOps(focused, byAddress, mon, bases, includeFloating, mode) {
   mode = mode || "focused"
   var all = [focused].concat(tiledSiblings(focused, byAddress, includeFloating))
-  var strips = clusterStrips(all, "x")
-  var reps = []
-  var s
-  for (s = 0; s < strips.length; s++) reps.push(stripRep(strips[s], focused, "x"))
-  var available = 0
-  for (s = 0; s < strips.length; s++) available += Math.max(1, Math.round(strips[s].a2 - strips[s].a1))
-  var n = strips.length
-  var claims = []
-  for (s = 0; s < n; s++) claims.push(stripClaim(strips[s], focused, bases, available, n, "x", mon))
-  var fi = -1
-  for (s = 0; s < n; s++) {
-    for (var wi = 0; wi < strips[s].windows.length; wi++) {
-      if (strips[s].windows[wi].address === focused.address) fi = s
-    }
-  }
-  var wTargets = {}
-  if (n >= 2 && fi >= 0) {
-    var minSize = minDim(mon, "x")
-    var focusedTarget = Math.round(Math.min(claims[fi], available - (n - 1) * minSize))
-    if (focusedTarget < minSize) focusedTarget = minSize
-    var remainder = available - focusedTarget
-    var weights = []
-    var unfocused = []
-    for (s = 0; s < n; s++) {
-      if (s === fi) continue
-      unfocused.push(s)
-      weights.push(claims[s])
-    }
-    var shares = shareRemainder(weights, remainder, minSize)
-    wTargets[reps[fi].address] = focusedTarget
-    for (s = 0; s < unfocused.length; s++) wTargets[reps[unfocused[s]].address] = shares[s]
-  }
   var sizes = {}
-  for (s = 0; s < strips.length; s++) {
-    var tw = wTargets[reps[s].address]
-    var width = tw === undefined ? reps[s].w : tw
-    assignStrip(strips[s], width, focused, bases, mon, sizes)
-  }
+  var wTargets = {}
+  if (!all.length) return { ops: [], sizes: sizes, wTargets: wTargets }
+  var box = boundingBox(all)
+  fillTree(buildTree(all), { w: box.w, h: box.h }, focused.address, bases, mon, sizes)
 
   var ops = []
   var addr
   for (addr in sizes) {
     if (mode === "focused" && addr !== focused.address) continue
-    if (mode === "others" && (addr === focused.address || strips.length === 2)) continue
     var win = byAddress[addr]
     if (!win) continue
+    var sameCol = overlapAmount(win.x, win.x + win.w, focused.x, focused.x + focused.w) > 24
+    if (mode === "others") {
+      if (addr === focused.address) continue
+    }
     var d = deltaToTarget(win, mon, sizes[addr])
-    if (Math.abs(d.x) > 2 || Math.abs(d.y) > 2) ops.push({ address: addr, dx: d.x, dy: d.y })
+    if (yInterior(win, mon)) d.y = 0
+    if (mode === "others" && sameCol) d.x = 0
+    if (Math.abs(d.x) > 2) ops.push({ address: addr, dx: d.x, dy: 0 })
+    if (Math.abs(d.y) > 2) ops.push({ address: addr, dx: 0, dy: d.y })
   }
   return { ops: ops, sizes: sizes, wTargets: wTargets }
 }

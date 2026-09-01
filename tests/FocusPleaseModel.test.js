@@ -214,6 +214,82 @@ describe("split column borrows from other columns", () => {
   })
 })
 
+describe("nested top-row split borrows from the other column", () => {
+  const A = win("0xa", "org.omarchy.agent", 6, 934)
+  const F = win("0xf", "foot", 948, 884, { h: 686, y: 6 })
+  const C = win("0xc", "chromium", 1840, 41, { h: 686, y: 6 })
+  const N = win("0xn", "org.gnome.Nautilus", 948, 933, { h: 374, y: 700 })
+  const clients = { "0xa": A, "0xf": F, "0xc": C, "0xn": N }
+  const bases = {
+    "ws1::foot": { w: 933, h: 686 },
+    "ws1::chromium": { w: 751, h: 686 },
+    "ws1::org.gnome.Nautilus": { w: 1179, h: 674 }
+  }
+
+  it("gives the terminal its width without crushing the browser or OpenCode", () => {
+    const plan = layoutOps(F, clients, mon, bases, false, "focused")
+    assert.ok(plan.sizes["0xf"].w >= 900, "terminal should claim ~933")
+    assert.ok(plan.sizes["0xc"].w > 200, "browser should stay usable")
+    assert.ok(plan.sizes["0xa"].w > 300, "OpenCode should not be squeezed to the minimum")
+  })
+
+  it("emits an other-column resize so the terminal does not only eat the browser", () => {
+    const plan = layoutOps(F, clients, mon, bases, false, "others")
+    const agent = plan.ops.filter(o => o.address === "0xa")
+    assert.ok(agent.length >= 1, "OpenCode should cede width")
+  })
+})
+
+describe("three stacked windows in one column", () => {
+  const L = win("0xl", "left.app", 0, 640)
+  const T = win("0xt", "stack.top", 640, 1280, { h: 200, y: 6 })
+  const M = win("0xm", "stack.mid", 640, 1280, { h: 400, y: 206 })
+  const B = win("0xb", "stack.bot", 640, 1280, { h: 468, y: 606 })
+  const clients = { "0xl": L, "0xt": T, "0xm": M, "0xb": B }
+  const bases = {
+    "ws1::stack.top": { w: 800, h: 300 },
+    "ws1::stack.mid": { w: 800, h: 400 },
+    "ws1::stack.bot": { w: 800, h: 500 }
+  }
+
+  it("gives the middle window its configured height without pinning a sibling to the minimum", () => {
+    const plan = layoutOps(M, clients, mon, bases, false, "focused")
+    assert.equal(plan.sizes["0xm"].h, 400)
+    assert.ok(plan.sizes["0xt"].h > 120, "top sibling should keep a fair remainder")
+    assert.ok(plan.sizes["0xb"].h > 200, "bottom sibling should keep a fair remainder")
+  })
+
+  it("gives the top stacked window its configured height", () => {
+    const plan = layoutOps(T, clients, mon, bases, false, "focused")
+    assert.equal(plan.sizes["0xt"].h, 300)
+  })
+
+  it("gives the bottom stacked window its configured height", () => {
+    const plan = layoutOps(B, clients, mon, bases, false, "focused")
+    assert.equal(plan.sizes["0xb"].h, 500)
+  })
+
+  it("grows a middle stacked window by resizing siblings, not the middle window itself", () => {
+    const fops = layoutOps(M, clients, mon, bases, false, "focused").ops
+    const oops = layoutOps(M, clients, mon, bases, false, "others").ops
+    assert.equal(fops.filter(o => o.address === "0xm" && o.dy !== 0).length, 0)
+    assert.equal(oops.filter(o => o.address === "0xm" && o.dy !== 0).length, 0)
+    assert.ok(oops.some(o => o.address !== "0xm" && o.dy !== 0))
+  })
+
+  it("splits leftover the same way regardless of current heights", () => {
+    const T2 = win("0xt", "stack.top", 640, 1280, { h: 800, y: 6 })
+    const M2 = win("0xm", "stack.mid", 640, 1280, { h: 100, y: 806 })
+    const B2 = win("0xb", "stack.bot", 640, 1280, { h: 168, y: 906 })
+    const clients2 = { "0xl": L, "0xt": T2, "0xm": M2, "0xb": B2 }
+    const a = layoutOps(T, clients, mon, bases, false, "focused")
+    const b = layoutOps(T2, clients2, mon, bases, false, "focused")
+    assert.equal(a.sizes["0xt"].h, b.sizes["0xt"].h)
+    assert.equal(a.sizes["0xm"].h, b.sizes["0xm"].h)
+    assert.equal(a.sizes["0xb"].h, b.sizes["0xb"].h)
+  })
+})
+
 describe("configuredDim", () => {
   it("uses equal share when there is no persisted size", () => {
     const w = win("0xa", "app.a", 0, 640)
