@@ -1,8 +1,8 @@
 {
   "name": "focusplease",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Omarchy service plugin: focused Hyprland window claims its configured pixel size",
+  "description": "Omarchy plugin: focused window claims its size; overcrowded workspaces offer a move dialog",
   "scripts": {
     "test": "node --test tests/*.test.js",
     "validate": "omarchy plugin validate ."

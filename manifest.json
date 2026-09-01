@@ -2,15 +2,17 @@
   "schemaVersion": 1,
   "id": "jose.focusplease",
   "name": "FocusPlease",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "Jose",
   "license": "MIT",
-  "description": "On focus, the Hyprland window claims its configured pixel size; the others recompose in proportion.",
+  "description": "On focus, the Hyprland window claims its configured pixel size. When the workspace is full, pick windows to move to the next one.",
   "kinds": [
-    "service"
+    "service",
+    "overlay"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "service": "Service.qml"
+    "service": "Service.qml",
+    "overlay": "Suggest.qml"
   }
 }

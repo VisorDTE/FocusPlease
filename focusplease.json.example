@@ -1,4 +1,9 @@
 {
   "enabled": true,
-  "includeFloating": false
+  "includeFloating": false,
+  "overcrowd": {
+    "enabled": true,
+    "minWidthRatio": 0.18,
+    "minHeightRatio": 0.22
+  }
 }

@@ -11,12 +11,25 @@ function numberOr(value, fallback) {
   return isFinite(n) ? n : fallback
 }
 
+function clampRatio(value, fallback) {
+  var n = numberOr(value, fallback)
+  if (!(n > 0) || n > 0.5) return fallback
+  return n
+}
+
 function parseConfig(fileRaw) {
   var file = parseJson(fileRaw, {})
   if (!file || typeof file !== "object" || Array.isArray(file)) file = {}
+  var oc = file.overcrowd
+  if (!oc || typeof oc !== "object" || Array.isArray(oc)) oc = {}
   return {
     enabled: file.enabled !== false,
-    includeFloating: !!file.includeFloating
+    includeFloating: !!file.includeFloating,
+    overcrowd: {
+      enabled: oc.enabled !== false,
+      minWidthRatio: clampRatio(oc.minWidthRatio, 0.18),
+      minHeightRatio: clampRatio(oc.minHeightRatio, 0.22)
+    }
   }
 }
 
@@ -29,6 +42,7 @@ function windowMeta(c) {
   return {
     address: String(c.address || ""),
     cls: String(c.class || c.initialClass || ""),
+    title: String(c.title || ""),
     w: numberOr(size[0], 0),
     h: numberOr(size[1], 0),
     x: numberOr(at[0], 0),
@@ -122,6 +136,161 @@ function lookupBase(win, bases) {
   return bases[baseKey(win)] || bases[classKey(win)] || null
 }
 
+function addressFromKey(key) {
+  var s = String(key || "")
+  var i = s.lastIndexOf("::")
+  if (i < 0) return ""
+  var addr = s.slice(i + 2)
+  if (/^0x[0-9a-f]+$/i.test(addr)) return addr
+  return ""
+}
+
+function sameAddress(a, b) {
+  var x = String(a || "").toLowerCase()
+  var y = String(b || "").toLowerCase()
+  if (!x || !y) return false
+  if (x === y) return true
+  if (x.indexOf("0x") === 0) x = x.slice(2)
+  if (y.indexOf("0x") === 0) y = y.slice(2)
+  return x === y && x.length > 0
+}
+
+function purgeAddress(map, address) {
+  var src = map && typeof map === "object" ? map : {}
+  var out = {}
+  var changed = false
+  var k
+  for (k in src) {
+    if (sameAddress(addressFromKey(k), address)) {
+      changed = true
+      continue
+    }
+    out[k] = src[k]
+  }
+  return { map: out, changed: changed }
+}
+
+function isEmptyMap(map) {
+  if (!map || typeof map !== "object") return true
+  var k
+  for (k in map) if (map[k]) return false
+  return true
+}
+
+function pruneOrphans(map, byAddress) {
+  var live = {}
+  var list = clientsList(byAddress)
+  if (!list.length) return { map: map && typeof map === "object" ? map : {}, changed: false }
+  var i
+  for (i = 0; i < list.length; i++) live[String(list[i].address || "").toLowerCase()] = true
+  var src = map && typeof map === "object" ? map : {}
+  var out = {}
+  var changed = false
+  var k
+  for (k in src) {
+    var addr = addressFromKey(k)
+    if (addr && !live[addr.toLowerCase()]) {
+      changed = true
+      continue
+    }
+    out[k] = src[k]
+  }
+  return { map: out, changed: changed }
+}
+
+function overlayBirths(user, births) {
+  var out = {}
+  var k
+  if (births && typeof births === "object") {
+    for (k in births) if (births[k]) out[k] = births[k]
+  }
+  if (user && typeof user === "object") {
+    for (k in user) if (user[k]) out[k] = user[k]
+  }
+  return out
+}
+
+function overlayDemand(user, births, focused) {
+  var out = {}
+  if (!focused || !user || typeof user !== "object") return out
+  var uk = user[baseKey(focused)] || user[classKey(focused)]
+  if (uk) out[baseKey(focused)] = uk
+  return out
+}
+
+function shouldLayout(focused, user) {
+  return !!(focused && lookupBase(focused, user))
+}
+
+function captureBirths(byAddress, births, includeFloating) {
+  var out = {}
+  var k
+  if (births && typeof births === "object") {
+    for (k in births) {
+      var b = births[k]
+      if (b && b.w > 0 && b.h > 0) out[k] = { w: b.w, h: b.h }
+    }
+  }
+  var changed = false
+  var list = clientsList(byAddress)
+  var i
+  for (i = 0; i < list.length; i++) {
+    var w = list[i]
+    if (!isGrowable(w, includeFloating)) continue
+    var key = baseKey(w)
+    if (out[key]) continue
+    if (!(w.w > 0) || !(w.h > 0)) continue
+    out[key] = { w: w.w, h: w.h }
+    changed = true
+  }
+  return { births: out, changed: changed }
+}
+
+function findClient(byAddress, address) {
+  if (!byAddress || !address) return null
+  if (byAddress[address]) return byAddress[address]
+  var list = clientsList(byAddress)
+  var i
+  for (i = 0; i < list.length; i++) {
+    if (sameAddress(list[i].address, address)) return list[i]
+  }
+  return null
+}
+
+function captureOneBirth(win, births) {
+  var out = {}
+  var k
+  if (births && typeof births === "object") {
+    for (k in births) {
+      var b = births[k]
+      if (b && b.w > 0 && b.h > 0) out[k] = { w: b.w, h: b.h }
+    }
+  }
+  if (!win || !win.address) return { births: out, changed: false }
+  var key = baseKey(win)
+  if (out[key]) return { births: out, changed: false }
+  if (!(win.w > 0) || !(win.h > 0)) return { births: out, changed: false }
+  out[key] = { w: win.w, h: win.h }
+  return { births: out, changed: true }
+}
+
+function captureWorkspaceBirths(byAddress, births, workspaceId, includeFloating, monitorId) {
+  var windows = workspaceWindows(byAddress, workspaceId, includeFloating, monitorId)
+  var out = births
+  var changed = false
+  if (!windows || windows.length < 2) {
+    var empty = captureOneBirth(null, births)
+    return { births: empty.births, changed: false }
+  }
+  var i
+  for (i = 0; i < windows.length; i++) {
+    var cap = captureOneBirth(windows[i], out)
+    out = cap.births
+    if (cap.changed) changed = true
+  }
+  return { births: out, changed: changed }
+}
+
 function edgeSigns(win, mon) {
   var tol = 20
   var wa = mon && mon.wa && mon.wa.w > 0 && mon.wa.h > 0 ? mon.wa : null
@@ -180,9 +349,56 @@ function mergeBases(persistedRaw) {
     if (!b || typeof b !== "object") continue
     var w = numberOr(b.w, 0)
     var h = numberOr(b.h, 0)
-    if (w > 0 && h > 0) out[key] = { w: w, h: h }
+    if (w > 0 || h > 0) {
+      out[key] = {}
+      if (w > 0) out[key].w = w
+      if (h > 0) out[key].h = h
+    }
   }
   return out
+}
+
+function mergeAxisBase(prev, expected, cur, noise) {
+  noise = noise === undefined ? 40 : noise
+  var next = {}
+  if (prev && numberOr(prev.w, 0) > 0) next.w = prev.w
+  if (prev && numberOr(prev.h, 0) > 0) next.h = prev.h
+  if (!expected || !cur) return (next.w > 0 || next.h > 0) ? next : null
+  if (Math.abs(cur.w - expected.w) > noise) {
+    if (!(next.w > 0) || Math.abs(cur.w - next.w) > noise) next.w = cur.w
+  }
+  if (Math.abs(cur.h - expected.h) > noise) {
+    if (!(next.h > 0) || Math.abs(cur.h - next.h) > noise) next.h = cur.h
+  }
+  if (!(next.w > 0) && !(next.h > 0)) return null
+  return next
+}
+
+function hasPeerAlong(win, windows, axis, minSize) {
+  if (!win || !windows) return false
+  minSize = minSize || 80
+  var i
+  for (i = 0; i < windows.length; i++) {
+    var o = windows[i]
+    if (!o || o.address === win.address) continue
+    if (axis === "x") {
+      if (overlapAmount(win.y, win.y + win.h, o.y, o.y + o.h) > 24 && o.w >= minSize) return true
+    } else if (overlapAmount(win.x, win.x + win.w, o.x, o.x + o.w) > 24 && o.h >= minSize) return true
+  }
+  return false
+}
+
+function claimAxes(focused, bases, windows, mon) {
+  var b = lookupBase(focused, bases)
+  var x = !!(b && numberOr(b.w, 0) > 0)
+  var y = !!(b && numberOr(b.h, 0) > 0)
+  var waW = mon && mon.wa && mon.wa.w > 0 ? mon.wa.w : 1920
+  var waH = mon && mon.wa && mon.wa.h > 0 ? mon.wa.h : 1080
+  var minX = Math.max(minDim(mon, "x"), Math.round(waW * 0.12))
+  var minY = Math.max(minDim(mon, "y"), Math.round(waH * 0.12))
+  if (x && !hasPeerAlong(focused, windows, "x", minX)) x = false
+  if (y && !hasPeerAlong(focused, windows, "y", minY)) y = false
+  return { x: x, y: y }
 }
 
 function resizeCommand(address, dx, dy) {
@@ -579,6 +795,7 @@ function layoutOps(focused, byAddress, mon, bases, includeFloating, mode) {
   if (!all.length) return { ops: [], sizes: sizes, wTargets: wTargets }
   var box = boundingBox(all)
   fillTree(buildTree(all), { w: box.w, h: box.h }, focused.address, bases, mon, sizes)
+  var axes = claimAxes(focused, bases, all, mon)
 
   var ops = []
   var addr
@@ -593,10 +810,175 @@ function layoutOps(focused, byAddress, mon, bases, includeFloating, mode) {
     var d = deltaToTarget(win, mon, sizes[addr])
     if (yInterior(win, mon)) d.y = 0
     if (mode === "others" && sameCol) d.x = 0
-    if (Math.abs(d.x) > 2) ops.push({ address: addr, dx: d.x, dy: 0 })
-    if (Math.abs(d.y) > 2) ops.push({ address: addr, dx: 0, dy: d.y })
+    if (axes.x && Math.abs(d.x) > 2) ops.push({ address: addr, dx: d.x, dy: 0 })
+    if (axes.y && Math.abs(d.y) > 2) ops.push({ address: addr, dx: 0, dy: d.y })
   }
   return { ops: ops, sizes: sizes, wTargets: wTargets }
+}
+
+function usableMin(mon, overcrowdCfg) {
+  var wa = mon && mon.wa ? mon.wa : null
+  var w = wa && wa.w > 0 ? wa.w : 1920
+  var h = wa && wa.h > 0 ? wa.h : 1080
+  var ratioW = overcrowdCfg && overcrowdCfg.minWidthRatio > 0 ? overcrowdCfg.minWidthRatio : 0.18
+  var ratioH = overcrowdCfg && overcrowdCfg.minHeightRatio > 0 ? overcrowdCfg.minHeightRatio : 0.22
+  return {
+    w: Math.max(280, Math.round(w * ratioW)),
+    h: Math.max(200, Math.round(h * ratioH))
+  }
+}
+
+function nodeMinSize(node, min) {
+  if (!node) return { w: 0, h: 0 }
+  if (node.type === "leaf") return { w: min.w, h: min.h }
+  var kids = nodeChildren(node)
+  var i
+  if (node.type === "v") {
+    var sumW = 0
+    var maxH = 0
+    for (i = 0; i < kids.length; i++) {
+      var vs = nodeMinSize(kids[i], min)
+      sumW += vs.w
+      if (vs.h > maxH) maxH = vs.h
+    }
+    return { w: sumW, h: maxH }
+  }
+  var maxW = 0
+  var sumH = 0
+  for (i = 0; i < kids.length; i++) {
+    var hs = nodeMinSize(kids[i], min)
+    if (hs.w > maxW) maxW = hs.w
+    sumH += hs.h
+  }
+  return { w: maxW, h: sumH }
+}
+
+function isSpecialWorkspace(workspaceId) {
+  if (workspaceId === undefined || workspaceId === null || workspaceId === "") return true
+  var s = String(workspaceId)
+  if (s.indexOf("special") !== -1) return true
+  var n = Number(workspaceId)
+  if (isFinite(n) && n < 1) return true
+  return false
+}
+
+function nextWorkspace(workspaceId) {
+  var n = Number(workspaceId)
+  if (!isFinite(n) || n < 1) return 0
+  return Math.round(n) + 1
+}
+
+function workspaceWindows(byAddress, workspaceId, includeFloating, monitorId) {
+  var out = []
+  var list = clientsList(byAddress)
+  for (var i = 0; i < list.length; i++) {
+    var o = list[i]
+    if (!isGrowable(o, includeFloating)) continue
+    if (String(o.workspaceId) !== String(workspaceId)) continue
+    if (monitorId !== undefined && monitorId !== null && Number(o.monitor) !== Number(monitorId)) continue
+    out.push(o)
+  }
+  out.sort(function (a, b) {
+    if (Math.abs(a.y - b.y) > 24) return a.y - b.y
+    return a.x - b.x
+  })
+  return out
+}
+
+function overcrowded(windows, mon, overcrowdCfg) {
+  if (!windows || windows.length < 3) return false
+  var min = usableMin(mon, overcrowdCfg)
+  var wa = mon && mon.wa && mon.wa.w > 0 && mon.wa.h > 0 ? mon.wa : { w: 1920, h: 1080 }
+  var need = nodeMinSize(buildTree(windows), min)
+  if (need.w > wa.w || need.h > wa.h) return true
+  var i
+  for (i = 0; i < windows.length; i++) {
+    if (windows[i].w < min.w || windows[i].h < min.h) return true
+  }
+  return false
+}
+
+function suggestMove(windows, mon, focusedAddr, overcrowdCfg) {
+  var keep = windows ? windows.slice() : []
+  var suggested = []
+  while (keep.length >= 3 && overcrowded(keep, mon, overcrowdCfg)) {
+    var pick = -1
+    var pickArea = Infinity
+    var i
+    for (i = 0; i < keep.length; i++) {
+      if (keep[i].address === focusedAddr) continue
+      var a = keep[i].w * keep[i].h
+      if (a < pickArea) {
+        pickArea = a
+        pick = i
+      }
+    }
+    if (pick < 0) break
+    suggested.push(keep[pick].address)
+    keep.splice(pick, 1)
+  }
+  return suggested
+}
+
+function promptSignature(workspaceId, windows) {
+  var addrs = []
+  var list = windows || []
+  for (var i = 0; i < list.length; i++) addrs.push(String(list[i].address || ""))
+  addrs.sort()
+  return String(workspaceId) + "::" + addrs.join(",")
+}
+
+function dialogWindows(windows) {
+  var out = []
+  var list = windows || []
+  for (var i = 0; i < list.length; i++) {
+    var w = list[i]
+    out.push({
+      address: w.address,
+      title: w.title || w.cls || w.address,
+      cls: w.cls || "",
+      w: w.w,
+      h: w.h
+    })
+  }
+  return out
+}
+
+function overcrowdedPlan(byAddress, focused, mon, includeFloating, overcrowdCfg) {
+  if (overcrowdCfg && overcrowdCfg.enabled === false) return null
+  if (!focused || isSpecialWorkspace(focused.workspaceId)) return null
+  var nextId = nextWorkspace(focused.workspaceId)
+  if (!(nextId > 0)) return null
+  var monitorId = focused.monitor
+  var windows = workspaceWindows(byAddress, focused.workspaceId, includeFloating, monitorId)
+  if (!overcrowded(windows, mon, overcrowdCfg)) return null
+  return {
+    workspaceId: focused.workspaceId,
+    nextWorkspaceId: nextId,
+    windows: windows,
+    suggested: suggestMove(windows, mon, focused.address, overcrowdCfg),
+    signature: promptSignature(focused.workspaceId, windows)
+  }
+}
+
+function moveCommand(address, workspaceId) {
+  return 'hl.dsp.window.move({ window = "address:' + String(address) + '", workspace = "' + String(workspaceId) + '", follow = false })'
+}
+
+function moveCommands(addresses, workspaceId) {
+  var parts = []
+  var list = addresses || []
+  for (var i = 0; i < list.length; i++) parts.push(moveCommand(list[i], workspaceId))
+  return parts.join("; ")
+}
+
+function moveShell(addresses, workspaceId) {
+  var parts = []
+  var list = addresses || []
+  for (var i = 0; i < list.length; i++) {
+    parts.push("hyprctl dispatch '" + moveCommand(list[i], workspaceId) + "'")
+  }
+  return parts.join("; ")
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -613,10 +995,22 @@ if (typeof module !== "undefined" && module.exports) {
     baseKey: baseKey,
     classKey: classKey,
     lookupBase: lookupBase,
+    purgeAddress: purgeAddress,
+    pruneOrphans: pruneOrphans,
+    isEmptyMap: isEmptyMap,
+    overlayBirths: overlayBirths,
+    overlayDemand: overlayDemand,
+    shouldLayout: shouldLayout,
+    captureBirths: captureBirths,
+    captureOneBirth: captureOneBirth,
+    captureWorkspaceBirths: captureWorkspaceBirths,
+    findClient: findClient,
     edgeSigns: edgeSigns,
     deltaToTarget: deltaToTarget,
     sameSize: sameSize,
     mergeBases: mergeBases,
+    mergeAxisBase: mergeAxisBase,
+    claimAxes: claimAxes,
     resizeCommand: resizeCommand,
     clientsList: clientsList,
     minDim: minDim,
@@ -625,6 +1019,18 @@ if (typeof module !== "undefined" && module.exports) {
     configuredDim: configuredDim,
     shareRemainder: shareRemainder,
     axisTargets: axisTargets,
-    layoutOps: layoutOps
+    layoutOps: layoutOps,
+    usableMin: usableMin,
+    overcrowded: overcrowded,
+    suggestMove: suggestMove,
+    nextWorkspace: nextWorkspace,
+    isSpecialWorkspace: isSpecialWorkspace,
+    workspaceWindows: workspaceWindows,
+    promptSignature: promptSignature,
+    dialogWindows: dialogWindows,
+    overcrowdedPlan: overcrowdedPlan,
+    moveCommand: moveCommand,
+    moveCommands: moveCommands,
+    moveShell: moveShell
   }
 }

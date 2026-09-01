@@ -13,17 +13,27 @@ Item {
   readonly property string home: Quickshell.env("HOME")
   readonly property string configPath: home + "/.config/omarchy/focusplease.json"
   readonly property string basesPath: home + "/.local/state/omarchy/focusplease/bases.json"
+  readonly property string birthsPath: home + "/.local/state/omarchy/focusplease/births.json"
 
   property bool enabled: true
   property bool includeFloating: false
+  property bool overcrowdEnabled: true
+  property real minWidthRatio: 0.18
+  property real minHeightRatio: 0.22
 
   property var bases: ({})
+  property var births: ({})
   property var grown: null
   property string activeAddress: ""
   property var lastClients: ({})
   property var lastMonitors: ({})
   property int savedFollowMouse: 1
   property bool followMouseHeld: false
+  property bool forceSuggest: false
+  property bool dialogOpen: false
+  property bool movingWindows: false
+  property string dismissedSignature: ""
+  property string pendingBirthAddress: ""
   readonly property string pluginDir: (manifest && manifest.__sourceDir)
     ? manifest.__sourceDir
     : (home + "/.config/omarchy/plugins/jose.focusplease")
@@ -31,6 +41,9 @@ Item {
   function applyConfig(raw) {
     var cfg = Model.parseConfig(raw)
     root.includeFloating = cfg.includeFloating
+    root.overcrowdEnabled = cfg.overcrowd.enabled
+    root.minWidthRatio = cfg.overcrowd.minWidthRatio
+    root.minHeightRatio = cfg.overcrowd.minHeightRatio
     if (cfg.enabled !== root.enabled) {
       if (cfg.enabled) {
         root.enabled = true
@@ -80,7 +93,6 @@ Item {
   }
 
   function requestRefresh() {
-    if (applyProc.running) return
     if (snapshotProc.running) return
     snapshotProc.running = true
   }
@@ -99,11 +111,27 @@ Item {
     if (!address) return
     if (root.grown && root.grown.address === address) root.grown = null
     if (root.activeAddress === address) root.activeAddress = ""
+    var bases = Model.purgeAddress(root.bases, address)
+    if (bases.changed) {
+      root.bases = bases.map
+      root.persistBases(true)
+    }
+    var births = Model.purgeAddress(root.births, address)
+    if (births.changed) {
+      root.births = births.map
+      root.persistBirths(true)
+    }
   }
 
   function persistManual(g, cur) {
     if (!g || !cur) return
-    root.bases[g.key] = { w: cur.w, h: cur.h }
+    var next = Model.mergeAxisBase(root.bases[g.key], g.expected, cur)
+    if (!next) return
+    var copy = {}
+    var k
+    for (k in root.bases) copy[k] = root.bases[k]
+    copy[g.key] = next
+    root.bases = copy
     root.persistBases()
   }
 
@@ -116,39 +144,133 @@ Item {
     root.lastClients = clients
     root.lastMonitors = monitors
 
+    if (root.pendingBirthAddress) {
+      var newborn = Model.findClient(clients, root.pendingBirthAddress)
+      if (newborn) {
+        var cap = Model.captureWorkspaceBirths(
+          clients, root.births, newborn.workspaceId, root.includeFloating, newborn.monitor)
+        if (cap.changed) {
+          root.births = cap.births
+          root.persistBirths()
+        }
+        root.pendingBirthAddress = ""
+      }
+    }
+
     var activeAddr = active && active.address ? active.address : ""
     root.activeAddress = activeAddr
+
+    root.maybeSuggestOvercrowd(clients, clients[activeAddr] || active, monitors)
 
     if (applyProc.running) return
 
     if (root.grown && root.grown.address === activeAddr) {
       if (root.grown.settling) root.handleSettle(activeAddr, clients[activeAddr])
       else root.noteManualIfResized(clients[activeAddr])
-      return
+    } else {
+      if (root.grown && root.grown.address !== activeAddr) {
+        if (root.grown.manual) root.persistManual(root.grown, clients[root.grown.address] || null)
+        root.grown = null
+      }
+      if (root.enabled && activeAddr) root.handleFocus(activeAddr, clients[activeAddr] || active)
     }
+  }
 
-    if (root.grown && root.grown.address !== activeAddr) {
-      if (root.grown.manual) root.persistManual(root.grown, clients[root.grown.address] || null)
-      root.grown = null
+  function overcrowdCfg() {
+    return {
+      enabled: root.overcrowdEnabled,
+      minWidthRatio: root.minWidthRatio,
+      minHeightRatio: root.minHeightRatio
     }
+  }
 
-    if (!root.enabled || !activeAddr) return
+  function maybeSuggestOvercrowd(clients, active, monitors) {
+    if (!root.enabled) return
+    if (root.dialogOpen || root.movingWindows) return
+    if (!root.forceSuggest && !root.overcrowdEnabled) return
+    if (!active || !active.address) return
+    var mon = Model.monitorForWindow(active, monitors)
+    var cfg = root.overcrowdCfg()
+    if (root.forceSuggest) cfg = { enabled: true, minWidthRatio: cfg.minWidthRatio, minHeightRatio: cfg.minHeightRatio }
+    var plan = Model.overcrowdedPlan(clients, active, mon, root.includeFloating, cfg)
+    if (!plan && root.forceSuggest) {
+      var windows = Model.workspaceWindows(clients, active.workspaceId, root.includeFloating, active.monitor)
+      var nextId = Model.nextWorkspace(active.workspaceId)
+      if (windows.length && nextId > 0) {
+        plan = {
+          workspaceId: active.workspaceId,
+          nextWorkspaceId: nextId,
+          windows: windows,
+          suggested: [],
+          signature: Model.promptSignature(active.workspaceId, windows)
+        }
+      }
+    }
+    var forced = root.forceSuggest
+    root.forceSuggest = false
+    if (!plan) return
+    if (!forced && plan.signature === root.dismissedSignature) return
+    root.openMoveDialog(plan)
+  }
 
-    root.handleFocus(activeAddr, clients[activeAddr] || active)
+  function openMoveDialog(plan) {
+    if (!plan || root.dialogOpen) return false
+    if (!root.shell || typeof root.shell.summon !== "function") return false
+    var payload = {
+      workspaceId: plan.workspaceId,
+      nextWorkspaceId: plan.nextWorkspaceId,
+      signature: plan.signature,
+      suggested: plan.suggested,
+      windows: Model.dialogWindows(plan.windows)
+    }
+    root.dialogOpen = true
+    var ok = root.shell.summon("jose.focusplease", JSON.stringify(payload))
+    if (!ok) root.dialogOpen = false
+    return ok
+  }
+
+  function onMoveDialogOpened() {
+    root.dialogOpen = true
+  }
+
+  function onMoveDialogClosed(moved, sig) {
+    root.dialogOpen = false
+    if (moved) root.dismissedSignature = ""
+    else root.dismissedSignature = String(sig || "")
+  }
+
+  function suggestNow() {
+    root.dismissedSignature = ""
+    root.forceSuggest = true
+    root.requestRefresh()
+    return "ok"
+  }
+
+  function moveWindows(addresses, workspaceId) {
+    if (!addresses || !addresses.length || !(Number(workspaceId) > 0)) return
+    var cmd = ["node", root.pluginDir + "/move.js", String(workspaceId)]
+    var i
+    for (i = 0; i < addresses.length; i++) cmd.push(String(addresses[i]))
+    root.movingWindows = true
+    root.dialogOpen = false
+    moveProc.command = cmd
+    moveProc.running = false
+    moveProc.running = true
   }
 
   function handleFocus(address, meta) {
     if (!meta || !Model.isGrowable(meta, root.includeFloating)) return
 
     var key = Model.baseKey(meta)
-    root.persistBases()
     root.grown = {
       address: address,
       key: key,
       expected: { w: meta.w, h: meta.h },
-      settling: true,
+      settling: false,
       manual: false
     }
+    if (!Model.shouldLayout(meta, root.bases)) return
+    root.grown.settling = true
     applyProc.command = ["node", root.pluginDir + "/apply.js", address, root.includeFloating ? "1" : "0"]
     applyProc.running = true
   }
@@ -173,25 +295,55 @@ Item {
     if (!cur) return
     var key = Model.baseKey(cur)
     if (root.bases[key]) {
-      delete root.bases[key]
-      root.persistBases()
+      var copy = {}
+      var k
+      for (k in root.bases) if (k !== key) copy[k] = root.bases[k]
+      root.bases = copy
+      root.persistBases(true)
     }
   }
 
-  function persistBases() {
+  function resetAll() {
+    root.bases = ({})
+    root.births = ({})
+    root.grown = null
+    root.dismissedSignature = ""
+    root.pendingBirthAddress = ""
+    root.persistBases(true)
+    root.persistBirths(true)
+    return "ok"
+  }
+
+  function persistBases(allowEmpty) {
+    if (!allowEmpty && Model.isEmptyMap(root.bases)) return
     var json = JSON.stringify(root.bases)
+    if (!json || json === "undefined") return
     writeProc.command = ["bash", "-c",
       "mkdir -p \"$HOME/.local/state/omarchy/focusplease\" && f=\"$HOME/.local/state/omarchy/focusplease/bases.json\" && printf '%s' \"$1\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"",
       "focusplease", json]
+    writeProc.running = false
     writeProc.running = true
+  }
+
+  function persistBirths(allowEmpty) {
+    if (!allowEmpty && Model.isEmptyMap(root.births)) return
+    var json = JSON.stringify(root.births)
+    if (!json || json === "undefined") return
+    writeBirthsProc.command = ["bash", "-c",
+      "mkdir -p \"$HOME/.local/state/omarchy/focusplease\" && f=\"$HOME/.local/state/omarchy/focusplease/births.json\" && printf '%s' \"$1\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"",
+      "focusplease", json]
+    writeBirthsProc.running = false
+    writeBirthsProc.running = true
   }
 
   function statusJson() {
     return JSON.stringify({
       enabled: root.enabled,
       includeFloating: root.includeFloating,
+      overcrowd: root.overcrowdEnabled,
       active: root.activeAddress,
       grown: root.grown ? root.grown.address : "",
+      dialogOpen: root.dialogOpen,
       bases: root.bases
     })
   }
@@ -209,8 +361,25 @@ Item {
     path: root.basesPath
     watchChanges: true
     printErrors: false
-    onLoaded: root.bases = Model.mergeBases(text() || "{}")
-    onLoadFailed: root.bases = ({})
+    onLoaded: {
+      var merged = Model.mergeBases(text() || "{}")
+      if (Model.isEmptyMap(merged) && !Model.isEmptyMap(root.bases)) return
+      root.bases = merged
+    }
+    onLoadFailed: {}
+    onFileChanged: reload()
+  }
+
+  FileView {
+    path: root.birthsPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      var merged = Model.mergeBases(text() || "{}")
+      if (Model.isEmptyMap(merged) && !Model.isEmptyMap(root.births)) return
+      root.births = merged
+    }
+    onLoadFailed: {}
     onFileChanged: reload()
   }
 
@@ -241,7 +410,20 @@ Item {
   }
 
   Process {
+    id: moveProc
+    onExited: {
+      root.movingWindows = false
+      snapshotProc.running = false
+      snapshotProc.running = true
+    }
+  }
+
+  Process {
     id: writeProc
+  }
+
+  Process {
+    id: writeBirthsProc
   }
 
   Process {
@@ -270,6 +452,8 @@ Item {
       if (name === "activewindowv2" || name === "activewindow") {
         root.requestRefresh()
       } else if (name === "openwindow") {
+        var opened = root.eventData(event)
+        root.pendingBirthAddress = String(opened[0] || "")
         root.grown = null
         root.requestRefresh()
       } else if (name === "closewindow") {
@@ -313,6 +497,19 @@ Item {
 
     function resetBase(): string {
       root.resetBase()
+      return "ok"
+    }
+
+    function reset(): string {
+      return root.resetAll()
+    }
+
+    function suggest(): string {
+      return root.suggestNow()
+    }
+
+    function dismissed(sig: string): string {
+      root.onMoveDialogClosed(false, sig)
       return "ok"
     }
   }

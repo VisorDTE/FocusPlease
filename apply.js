@@ -34,18 +34,31 @@ const focusedAddr = String(process.argv[2] || "")
 const includeFloating = process.argv[3] === "1"
 if (!focusedAddr) process.exit(0)
 
-var bases = {}
-try {
-  bases = M.mergeBases(fs.readFileSync(process.env.HOME + "/.local/state/omarchy/focusplease/bases.json", "utf8"))
-} catch (e) {}
+const stateDir = process.env.HOME + "/.local/state/omarchy/focusplease"
+
+function loadSizes(name) {
+  try {
+    return M.mergeBases(fs.readFileSync(stateDir + "/" + name, "utf8"))
+  } catch (e) {
+    return {}
+  }
+}
+
+var startClients = M.parseClients(hyprj("clients"))
+var bases = loadSizes("bases.json")
+var births = loadSizes("births.json")
+
+if (!M.shouldLayout(startClients[focusedAddr], bases)) process.exit(0)
 
 function step(mode) {
   var clients = M.parseClients(hyprj("clients"))
   var monitors = M.parseMonitors(hyprj("monitors"))
   var focused = clients[focusedAddr]
   if (!focused || !M.isGrowable(focused, includeFloating)) return false
+  if (!M.shouldLayout(focused, bases)) return false
   var mon = M.monitorForWindow(focused, monitors)
-  var plan = M.layoutOps(focused, clients, mon, bases, includeFloating, mode)
+  var demand = M.overlayDemand(bases, births, focused)
+  var plan = M.layoutOps(focused, clients, mon, demand, includeFloating, mode)
   var op = pick(plan.ops)
   if (!op) return false
   var before = clients[op.address]
@@ -59,6 +72,6 @@ var i
 for (i = 0; i < 2; i++) {
   if (!step("focused")) break
 }
-for (i = 0; i < 3; i++) {
+for (i = 0; i < 5; i++) {
   if (!step("others")) break
 }
