@@ -286,8 +286,8 @@ Item {
     if (!g || g.settling || !cur || !g.expected) return
     if (Model.sameSize(g.expected, cur, 8)) return
     g.manual = true
-    g.expected = { w: cur.w, h: cur.h }
     root.persistManual(g, cur)
+    g.expected = { w: cur.w, h: cur.h }
   }
 
   function resetBase() {
