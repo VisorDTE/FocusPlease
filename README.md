@@ -107,7 +107,7 @@ omarchy plugin validate .
 ```
 
 Requires Omarchy Quattro 4.0.1+ (Hyprland 0.56 Lua dispatchers). Stack: Omarchy
-shell `service` plugin (Quickshell), `hyprctl`, Node `node --test`.
+shell `service` + `overlay` plugin (Quickshell), `hyprctl`, Node `node --test`.
 
 ## License
 
