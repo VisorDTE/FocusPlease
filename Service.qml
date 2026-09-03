@@ -72,7 +72,7 @@ Item {
   }
 
   function setFollowMouse(n) {
-    followProc.command = ["hyprctl", "eval", "hl.config({ input = { follow_mouse = " + Number(n) + " } })"]
+    followProc.command = ["timeout", "-k", "2", "3", "hyprctl", "eval", "hl.config({ input = { follow_mouse = " + Number(n) + " } })"]
     followProc.running = false
     followProc.running = true
   }
@@ -90,6 +90,20 @@ Item {
     if (!root.followMouseHeld) return
     root.setFollowMouse(root.savedFollowMouse)
     root.followMouseHeld = false
+  }
+
+  function teardown() {
+    pollTimer.running = false
+    if (snapshotProc.running) snapshotProc.running = false
+    if (applyProc.running) applyProc.running = false
+    if (moveProc.running) moveProc.running = false
+    if (captureFollowProc.running) captureFollowProc.running = false
+    if (followProc.running) followProc.running = false
+    if (!root.followMouseHeld) return
+    root.followMouseHeld = false
+    followProc.command = ["timeout", "-k", "2", "3", "hyprctl", "eval",
+      "hl.config({ input = { follow_mouse = " + Number(root.savedFollowMouse) + " } })"]
+    followProc.startDetached()
   }
 
   function requestRefresh() {
@@ -248,7 +262,7 @@ Item {
 
   function moveWindows(addresses, workspaceId) {
     if (!addresses || !addresses.length || !(Number(workspaceId) > 0)) return
-    var cmd = ["node", root.pluginDir + "/move.js", String(workspaceId)]
+    var cmd = ["timeout", "-k", "2", "8", "node", root.pluginDir + "/move.js", String(workspaceId)]
     var i
     for (i = 0; i < addresses.length; i++) cmd.push(String(addresses[i]))
     root.movingWindows = true
@@ -271,7 +285,7 @@ Item {
     }
     if (!Model.shouldLayout(meta, root.bases)) return
     root.grown.settling = true
-    applyProc.command = ["node", root.pluginDir + "/apply.js", address, root.includeFloating ? "1" : "0"]
+    applyProc.command = ["timeout", "-k", "2", "8", "node", root.pluginDir + "/apply.js", address, root.includeFloating ? "1" : "0"]
     applyProc.running = true
   }
 
@@ -318,9 +332,7 @@ Item {
     if (!allowEmpty && Model.isEmptyMap(root.bases)) return
     var json = JSON.stringify(root.bases)
     if (!json || json === "undefined") return
-    writeProc.command = ["bash", "-c",
-      "mkdir -p \"$HOME/.local/state/omarchy/focusplease\" && f=\"$HOME/.local/state/omarchy/focusplease/bases.json\" && printf '%s' \"$1\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"",
-      "focusplease", json]
+    writeProc.command = ["timeout", "-k", "2", "5", "bash", root.pluginDir + "/write-state.sh", "bases", json]
     writeProc.running = false
     writeProc.running = true
   }
@@ -329,9 +341,7 @@ Item {
     if (!allowEmpty && Model.isEmptyMap(root.births)) return
     var json = JSON.stringify(root.births)
     if (!json || json === "undefined") return
-    writeBirthsProc.command = ["bash", "-c",
-      "mkdir -p \"$HOME/.local/state/omarchy/focusplease\" && f=\"$HOME/.local/state/omarchy/focusplease/births.json\" && printf '%s' \"$1\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"",
-      "focusplease", json]
+    writeBirthsProc.command = ["timeout", "-k", "2", "5", "bash", root.pluginDir + "/write-state.sh", "births", json]
     writeBirthsProc.running = false
     writeBirthsProc.running = true
   }
@@ -393,7 +403,7 @@ Item {
 
   Process {
     id: snapshotProc
-    command: ["bash", "-c",
+    command: ["timeout", "-k", "2", "5", "bash", "-c",
       "hyprctl -j clients; printf '\\n---S---\\n'; hyprctl -j activewindow 2>/dev/null; printf '\\n---S---\\n'; hyprctl -j monitors 2>/dev/null"]
     stdout: StdioCollector {
       waitForEnd: true
@@ -432,7 +442,7 @@ Item {
 
   Process {
     id: captureFollowProc
-    command: ["hyprctl", "getoption", "input:follow_mouse", "-j"]
+    command: ["timeout", "-k", "2", "3", "hyprctl", "getoption", "input:follow_mouse", "-j"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -469,7 +479,7 @@ Item {
     root.requestRefresh()
   }
 
-  Component.onDestruction: root.releaseFollowMouse()
+  Component.onDestruction: root.teardown()
 
   IpcHandler {
     target: "focusplease"
