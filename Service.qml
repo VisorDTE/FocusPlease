@@ -21,6 +21,11 @@ Item {
   property real minWidthRatio: 0.18
   property real minHeightRatio: 0.22
 
+  property string binTimeout: "/usr/bin/timeout"
+  property string binBash: "/usr/bin/bash"
+  property string binHyprctl: "/usr/bin/hyprctl"
+  property string binNode: ""
+
   property var bases: ({})
   property var births: ({})
   property var grown: null
@@ -44,6 +49,10 @@ Item {
     root.overcrowdEnabled = cfg.overcrowd.enabled
     root.minWidthRatio = cfg.overcrowd.minWidthRatio
     root.minHeightRatio = cfg.overcrowd.minHeightRatio
+    root.binTimeout = cfg.bins.timeout || "/usr/bin/timeout"
+    root.binBash = cfg.bins.bash || "/usr/bin/bash"
+    root.binHyprctl = cfg.bins.hyprctl || "/usr/bin/hyprctl"
+    if (cfg.bins.node) root.binNode = cfg.bins.node
     if (cfg.enabled !== root.enabled) {
       if (cfg.enabled) {
         root.enabled = true
@@ -72,7 +81,7 @@ Item {
   }
 
   function setFollowMouse(n) {
-    followProc.command = ["timeout", "-k", "2", "3", "hyprctl", "eval", "hl.config({ input = { follow_mouse = " + Number(n) + " } })"]
+    followProc.command = [root.binTimeout, "-k", "2", "3", root.binHyprctl, "eval", "hl.config({ input = { follow_mouse = " + Number(n) + " } })"]
     followProc.running = false
     followProc.running = true
   }
@@ -101,7 +110,7 @@ Item {
     if (followProc.running) followProc.running = false
     if (!root.followMouseHeld) return
     root.followMouseHeld = false
-    followProc.command = ["timeout", "-k", "2", "3", "hyprctl", "eval",
+    followProc.command = [root.binTimeout, "-k", "2", "3", root.binHyprctl, "eval",
       "hl.config({ input = { follow_mouse = " + Number(root.savedFollowMouse) + " } })"]
     followProc.startDetached()
   }
@@ -109,6 +118,31 @@ Item {
   function requestRefresh() {
     if (snapshotProc.running) return
     snapshotProc.running = true
+  }
+
+  function nodeCandidates() {
+    var home = root.home
+    return [
+      home + "/.local/share/mise/shims/node",
+      home + "/.local/bin/node",
+      "/usr/bin/node",
+      "/usr/local/bin/node",
+      "/opt/homebrew/bin/node",
+      "/run/current-system/sw/bin/node"
+    ]
+  }
+
+  function resolveNode() {
+    if (root.binNode) return
+    var cmd = [root.binBash, "-c",
+      'for c in "$@"; do [ -x "$c" ] && { printf "%s" "$c"; exit 0; }; done; exit 1',
+      "focusplease-node"]
+    var list = root.nodeCandidates()
+    var i
+    for (i = 0; i < list.length; i++) cmd.push(list[i])
+    nodeProbe.command = cmd
+    nodeProbe.running = false
+    nodeProbe.running = true
   }
 
   function eventData(event) {
@@ -262,7 +296,8 @@ Item {
 
   function moveWindows(addresses, workspaceId) {
     if (!addresses || !addresses.length || !(Number(workspaceId) > 0)) return
-    var cmd = ["timeout", "-k", "2", "8", "node", root.pluginDir + "/move.js", String(workspaceId)]
+    if (!root.binNode) return
+    var cmd = [root.binTimeout, "-k", "2", "8", root.binNode, root.pluginDir + "/move.js", String(workspaceId), root.binHyprctl]
     var i
     for (i = 0; i < addresses.length; i++) cmd.push(String(addresses[i]))
     root.movingWindows = true
@@ -284,8 +319,9 @@ Item {
       manual: false
     }
     if (!Model.shouldLayout(meta, root.bases)) return
+    if (!root.binNode) return
     root.grown.settling = true
-    applyProc.command = ["timeout", "-k", "2", "8", "node", root.pluginDir + "/apply.js", address, root.includeFloating ? "1" : "0"]
+    applyProc.command = [root.binTimeout, "-k", "2", "8", root.binNode, root.pluginDir + "/apply.js", address, root.includeFloating ? "1" : "0", root.binHyprctl]
     applyProc.running = true
   }
 
@@ -332,7 +368,7 @@ Item {
     if (!allowEmpty && Model.isEmptyMap(root.bases)) return
     var json = JSON.stringify(root.bases)
     if (!json || json === "undefined") return
-    writeProc.command = ["timeout", "-k", "2", "5", "bash", root.pluginDir + "/write-state.sh", "bases", json]
+    writeProc.command = [root.binTimeout, "-k", "2", "5", root.binBash, root.pluginDir + "/write-state.sh", "bases", json]
     writeProc.running = false
     writeProc.running = true
   }
@@ -341,7 +377,7 @@ Item {
     if (!allowEmpty && Model.isEmptyMap(root.births)) return
     var json = JSON.stringify(root.births)
     if (!json || json === "undefined") return
-    writeBirthsProc.command = ["timeout", "-k", "2", "5", "bash", root.pluginDir + "/write-state.sh", "births", json]
+    writeBirthsProc.command = [root.binTimeout, "-k", "2", "5", root.binBash, root.pluginDir + "/write-state.sh", "births", json]
     writeBirthsProc.running = false
     writeBirthsProc.running = true
   }
@@ -403,8 +439,8 @@ Item {
 
   Process {
     id: snapshotProc
-    command: ["timeout", "-k", "2", "5", "bash", "-c",
-      "hyprctl -j clients; printf '\\n---S---\\n'; hyprctl -j activewindow 2>/dev/null; printf '\\n---S---\\n'; hyprctl -j monitors 2>/dev/null"]
+    command: [root.binTimeout, "-k", "2", "5", root.binBash, "-c",
+      root.binHyprctl + " -j clients; printf '\\n---S---\\n'; " + root.binHyprctl + " -j activewindow 2>/dev/null; printf '\\n---S---\\n'; " + root.binHyprctl + " -j monitors 2>/dev/null"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.processSnapshot(text)
@@ -441,8 +477,24 @@ Item {
   }
 
   Process {
+    id: nodeProbe
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var found = String(text || "").trim()
+        if (found && found.charAt(0) === "/") {
+          root.binNode = found
+          console.log("focusplease: node resolved to " + found)
+        } else {
+          console.log("focusplease: node not found, window resizing disabled")
+        }
+      }
+    }
+  }
+
+  Process {
     id: captureFollowProc
-    command: ["timeout", "-k", "2", "3", "hyprctl", "getoption", "input:follow_mouse", "-j"]
+    command: [root.binTimeout, "-k", "2", "3", root.binHyprctl, "getoption", "input:follow_mouse", "-j"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -476,6 +528,7 @@ Item {
   Component.onCompleted: {
     console.log("focusplease service ready")
     if (root.enabled) root.holdFollowMouse()
+    root.resolveNode()
     root.requestRefresh()
   }
 

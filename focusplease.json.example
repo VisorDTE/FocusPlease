@@ -5,5 +5,9 @@
     "enabled": true,
     "minWidthRatio": 0.18,
     "minHeightRatio": 0.22
-  }
+  },
+  "nodePath": "/usr/bin/node",
+  "hyprctlPath": "/usr/bin/hyprctl",
+  "bashPath": "/usr/bin/bash",
+  "timeoutPath": "/usr/bin/timeout"
 }

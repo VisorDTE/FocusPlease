@@ -338,6 +338,7 @@ Item {
                   Text {
                     width: parent.width
                     text: title
+                    textFormat: Text.PlainText
                     color: index === root.cursorIndex ? root.selectedText : root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
@@ -347,6 +348,7 @@ Item {
                   Text {
                     width: parent.width
                     text: cls
+                    textFormat: Text.PlainText
                     visible: cls.length > 0 && cls !== title
                     color: root.foreground
                     opacity: 0.55

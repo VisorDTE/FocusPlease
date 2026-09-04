@@ -72,6 +72,13 @@ Optional file: `~/.config/omarchy/focusplease.json` (hot-reloads on save):
 }
 ```
 
+`nodePath`, `hyprctlPath`, `bashPath`, and `timeoutPath` may optionally
+override the absolute binary paths the plugin uses (defaults:
+`/usr/bin/hyprctl`, `/usr/bin/bash`, `/usr/bin/timeout`, and `node` resolved
+from a fixed list of well-known locations). Only absolute paths are accepted;
+relative paths are ignored so child processes never run through the inherited
+`PATH`.
+
 Per-window focused sizes live in
 `~/.local/state/omarchy/focusplease/bases.json` (written when you resize a
 focused window). Opening sizes live in

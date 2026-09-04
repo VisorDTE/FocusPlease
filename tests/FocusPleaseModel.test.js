@@ -44,6 +44,14 @@ describe("parseConfig", () => {
     assert.equal(cfg.enabled, false)
     assert.equal(cfg.includeFloating, true)
   })
+
+  it("accepts only absolute binary path overrides", () => {
+    const cfg = parseConfig('{"nodePath":"/usr/bin/node","hyprctlPath":"relative/path","bashPath":5,"timeoutPath":"/opt/timeout"}')
+    assert.equal(cfg.bins.node, "/usr/bin/node")
+    assert.equal(cfg.bins.hyprctl, "")
+    assert.equal(cfg.bins.bash, "")
+    assert.equal(cfg.bins.timeout, "/opt/timeout")
+  })
 })
 
 describe("parseClients", () => {

@@ -3,12 +3,17 @@ const fs = require("node:fs")
 const path = require("node:path")
 const M = require(path.join(__dirname, "FocusPleaseModel.js"))
 
+const focusedAddr = String(process.argv[2] || "")
+const includeFloating = process.argv[3] === "1"
+const hyprctl = String(process.argv[4] || "")
+if (!focusedAddr || !hyprctl) process.exit(0)
+
 function hyprj(what) {
-  return execFileSync("hyprctl", ["-j", what], { encoding: "utf8" })
+  return execFileSync(hyprctl, ["-j", what], { encoding: "utf8" })
 }
 
 function dispatch(lua) {
-  execFileSync("hyprctl", ["dispatch", lua], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+  execFileSync(hyprctl, ["dispatch", lua], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 }
 
 function pick(ops) {
@@ -29,10 +34,6 @@ function pick(ops) {
   if (Math.abs(dx) <= 24 && Math.abs(dy) <= 24) return null
   return { address: best.address, dx: dx, dy: dy }
 }
-
-const focusedAddr = String(process.argv[2] || "")
-const includeFloating = process.argv[3] === "1"
-if (!focusedAddr) process.exit(0)
 
 const stateDir = process.env.HOME + "/.local/state/omarchy/focusplease"
 

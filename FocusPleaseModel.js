@@ -17,6 +17,12 @@ function clampRatio(value, fallback) {
   return n
 }
 
+function absolutePath(value) {
+  var s = String(value || "").trim()
+  if (!s || s.charAt(0) !== "/") return ""
+  return s
+}
+
 function parseConfig(fileRaw) {
   var file = parseJson(fileRaw, {})
   if (!file || typeof file !== "object" || Array.isArray(file)) file = {}
@@ -29,6 +35,12 @@ function parseConfig(fileRaw) {
       enabled: oc.enabled !== false,
       minWidthRatio: clampRatio(oc.minWidthRatio, 0.18),
       minHeightRatio: clampRatio(oc.minHeightRatio, 0.22)
+    },
+    bins: {
+      node: absolutePath(file.nodePath),
+      hyprctl: absolutePath(file.hyprctlPath),
+      bash: absolutePath(file.bashPath),
+      timeout: absolutePath(file.timeoutPath)
     }
   }
 }
@@ -985,6 +997,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     parseJson: parseJson,
     numberOr: numberOr,
+    absolutePath: absolutePath,
     parseConfig: parseConfig,
     windowMeta: windowMeta,
     parseClients: parseClients,
